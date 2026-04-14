@@ -1,0 +1,75 @@
+@import url('https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;600&family=Instrument+Sans:wght@400;500;600;700&family=Teko:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg: #000000;
+  --panel: rgba(8, 8, 8, 0.92);
+  --panel-strong: rgba(12, 12, 12, 0.96);
+  --text-main: #f7f8f0;
+  --text-dim: rgba(247, 248, 240, 0.7);
+  --accent: #bdf500;
+  --accent-soft: rgba(189, 245, 0, 0.78);
+  --font-display: 'Teko', sans-serif;
+  --font-body: 'Instrument Sans', sans-serif;
+  --font-mono: 'Chivo Mono', monospace;
+
+  color: var(--text-main);
+  background: var(--bg);
+  font: 16px/1.5 var(--font-body);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(189, 245, 0, 0.08), transparent 24%),
+    radial-gradient(circle at bottom right, rgba(189, 245, 0, 0.06), transparent 20%),
+    linear-gradient(180deg, #060606, #000000 36%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at center, black, transparent 92%);
+  opacity: 0.35;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+#root {
+  min-height: 100vh;
+}
