@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KokoroTTS } from 'kokoro-js'
 import './App.css'
 import {
+  DEFAULT_VOICE_ID,
   MODEL_ID,
   SAMPLE_TEXT,
   VOICE_OPTIONS,
+  VOICE_SUPPORT_NOTE,
   buildWavBlob,
   chunkTextForKokoro,
   estimateDurationSeconds,
@@ -30,23 +32,64 @@ type ChunkRecord = {
 }
 
 const STOP_MESSAGE = '__STOP_REQUESTED__'
+const SCRIPT_STORAGE_KEY = 'kokoro-infinite-tts:script-draft'
+const REMOVED_SAMPLE_PREFIXES = [
+  'No estúdio preto e verde-limão, cada frase vira uma faixa sonora contínua.',
+]
+
+const MODEL_STATE_LABELS = {
+  idle: 'Idle',
+  loading: 'Loading',
+  ready: 'Ready',
+  error: 'Error',
+} satisfies Record<ModelState, string>
+
+const CHUNK_STATUS_LABELS = {
+  queued: 'Queued',
+  rendering: 'Generating',
+  ready: 'Ready',
+  error: 'Error',
+} satisfies Record<ChunkStatus, string>
+
+function getInitialText() {
+  if (typeof window === 'undefined') {
+    return SAMPLE_TEXT.en
+  }
+
+  try {
+    const savedDraft = window.localStorage.getItem(SCRIPT_STORAGE_KEY)
+
+    if (savedDraft === null) {
+      return SAMPLE_TEXT.en
+    }
+
+    if (REMOVED_SAMPLE_PREFIXES.some((prefix) => savedDraft.startsWith(prefix))) {
+      window.localStorage.setItem(SCRIPT_STORAGE_KEY, SAMPLE_TEXT.en)
+      return SAMPLE_TEXT.en
+    }
+
+    return savedDraft
+  } catch {
+    return SAMPLE_TEXT.en
+  }
+}
 
 function App() {
-  const [text, setText] = useState<string>(SAMPLE_TEXT.pt)
-  const [voiceId, setVoiceId] = useState<VoiceId>('pf_dora')
+  const [text, setText] = useState<string>(() => getInitialText())
+  const [voiceId, setVoiceId] = useState<VoiceId>(DEFAULT_VOICE_ID)
   const [speed, setSpeed] = useState(1)
   const [devicePreference, setDevicePreference] =
     useState<DevicePreference>('auto')
   const [modelState, setModelState] = useState<ModelState>('idle')
   const [modelMessage, setModelMessage] = useState(
-    'Model idle — first run loads weights directly in the browser.',
+    'Load the engine once, then render long scripts in this browser.',
   )
   const [modelProgress, setModelProgress] = useState(0)
   const [modelFile, setModelFile] = useState('')
   const [engineLabel, setEngineLabel] = useState('Awaiting first load')
   const [runState, setRunState] = useState<RunState>('idle')
   const [runMessage, setRunMessage] = useState(
-    'Paste a long script, then render a stitched WAV without a backend.',
+    'Paste a script, choose a voice, and generate a single downloadable WAV.',
   )
   const [chunks, setChunks] = useState<ChunkRecord[]>([])
   const [completedChunks, setCompletedChunks] = useState(0)
@@ -54,7 +97,7 @@ function App() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
   const [logs, setLogs] = useState<string[]>([
-    'Browser-only pipeline ready — Kokoro model, voices, chunking, and export stay on the client.',
+    'Ready for long-form text-to-speech with local chunking, voice rendering, and WAV export.',
   ])
 
   const ttsRef = useRef<KokoroTTS | null>(null)
@@ -149,7 +192,7 @@ function App() {
     }
 
     setModelState('loading')
-    setModelMessage('Loading Kokoro weights and tokenizer…')
+    setModelMessage('Loading voices and model files…')
     setModelProgress(0)
     setModelFile('Preparing download queue…')
     setLastError(null)
@@ -180,15 +223,15 @@ function App() {
               .join(' · ')
 
             setModelProgress(numericProgress)
-            setModelFile(fileLabel || 'Downloading model assets…')
+            setModelFile(fileLabel || 'Downloading voice and model assets…')
           },
         })
 
         ttsRef.current = engine
         setModelState('ready')
         setModelProgress(100)
-        setModelMessage('Engine ready — subsequent runs use the cached browser assets.')
-        setModelFile('Tokenizer, ONNX graph, and voice files are available.')
+        setModelMessage('Engine ready — future runs can reuse cached browser assets.')
+        setModelFile('Voice files, tokenizer, and model graph are ready.')
         appendLog(`Engine ready on ${attempt.label}.`)
         return engine
       } catch (error) {
@@ -215,14 +258,15 @@ function App() {
   )
 
   const resetEngine = useCallback(() => {
-    stopRun('Engine reset. Load again to apply a new device preference.')
+    stopRun('Engine reset. Load it again to apply a different performance mode.')
     ttsRef.current = null
     setModelState('idle')
-    setModelMessage('Model idle — reload to apply a different device mode.')
+    setModelMessage('Engine idle — load it again to use the selected performance mode.')
     setModelProgress(0)
     setModelFile('')
     setEngineLabel('Awaiting first load')
-    appendLog('Engine reset. Next render will re-download metadata if needed.')
+    setLastError(null)
+    appendLog('Engine reset. The next render will reload the selected performance mode.')
   }, [appendLog, stopRun])
 
   const handleGenerate = useCallback(async () => {
@@ -230,8 +274,8 @@ function App() {
 
     if (!nextChunks.length) {
       setRunState('error')
-      setRunMessage('Add some text before generating audio.')
-      setLastError('The text area is empty.')
+      setRunMessage('Add a script before generating audio.')
+      setLastError('The script area is empty.')
       return
     }
 
@@ -252,8 +296,10 @@ function App() {
       })),
     )
     setRunState('generating')
-    setRunMessage(`Rendering ${nextChunks.length} chunks with ${selectedVoice.label}.`)
-    appendLog(`Run started with ${nextChunks.length} chunks and ${selectedVoice.label}.`)
+    setRunMessage(`Generating ${nextChunks.length} parts with ${selectedVoice.label}.`)
+    appendLog(`Run started with ${nextChunks.length} parts and ${selectedVoice.label}.`)
+
+    let activeChunkIndex = -1
 
     try {
       const engine = await ensureEngine()
@@ -265,12 +311,15 @@ function App() {
           throw new Error(STOP_MESSAGE)
         }
 
+        activeChunkIndex = index
         setChunks((current) =>
           current.map((chunk) =>
-            chunk.index === index ? { ...chunk, status: 'rendering' } : chunk,
+            chunk.index === index
+              ? { ...chunk, status: 'rendering', error: undefined }
+              : chunk,
           ),
         )
-        setRunMessage(`Rendering chunk ${index + 1} of ${nextChunks.length}…`)
+        setRunMessage(`Generating part ${index + 1} of ${nextChunks.length}…`)
 
         const audio = await engine.generate(chunkText, {
           voice: voiceId as never,
@@ -293,6 +342,7 @@ function App() {
                   ...chunk,
                   status: 'ready',
                   durationSeconds: duration,
+                  error: undefined,
                 }
               : chunk,
           ),
@@ -300,7 +350,7 @@ function App() {
 
         await streamChunk(audio.toBlob())
         appendLog(
-          `Chunk ${index + 1}/${nextChunks.length} ready (${formatSeconds(duration)}).`,
+          `Part ${index + 1}/${nextChunks.length} ready (${formatSeconds(duration)}).`,
         )
       }
 
@@ -309,15 +359,36 @@ function App() {
       downloadUrlRef.current = objectUrl
       setDownloadUrl(objectUrl)
       setRunState('complete')
-      setRunMessage('Done — all chunks stitched into one downloadable WAV.')
-      appendLog(`Run complete. Exported a single WAV from ${nextChunks.length} chunks.`)
+      setRunMessage('Done — your full script is ready as one WAV download.')
+      appendLog(`Run complete. Exported one WAV from ${nextChunks.length} parts.`)
     } catch (error) {
       const message = getErrorMessage(error)
+
       if (message === STOP_MESSAGE) {
+        if (activeChunkIndex >= 0) {
+          setChunks((current) =>
+            current.map((chunk) =>
+              chunk.index === activeChunkIndex && chunk.status === 'rendering'
+                ? { ...chunk, status: 'queued' }
+                : chunk,
+            ),
+          )
+        }
+
         setRunState('stopped')
-        setRunMessage('Generation stopped before finishing all chunks.')
-        appendLog('Run stopped by the operator.')
+        setRunMessage('Generation stopped before the full script finished.')
+        appendLog('Run stopped before the current part finished.')
         return
+      }
+
+      if (activeChunkIndex >= 0) {
+        setChunks((current) =>
+          current.map((chunk) =>
+            chunk.index === activeChunkIndex
+              ? { ...chunk, status: 'error', error: message }
+              : chunk,
+          ),
+        )
       }
 
       setRunState('error')
@@ -338,6 +409,18 @@ function App() {
   ])
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    try {
+      window.localStorage.setItem(SCRIPT_STORAGE_KEY, text)
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [text])
+
+  useEffect(() => {
     return () => {
       runTokenRef.current += 1
       stopPlayback()
@@ -354,37 +437,36 @@ function App() {
 
       <header className="hero-panel panel">
         <div className="hero-copy">
-          <p className="eyebrow">Kokoro.js · browser-first TTS studio</p>
+          <p className="eyebrow">Long-form text to speech</p>
           <h1>
-            Infinite narration, <span>zero backend</span>.
+            Long-form text to speech, <span>right in your browser.</span>
           </h1>
           <p className="hero-lead">
-            This interface takes very long text, splits it into Kokoro-safe chunks,
-            streams each render in sequence, and exports a single stitched WAV — all
-            from the browser.
+            Paste a script, choose from the current Kokoro voice set, and
+            generate a single downloadable WAV with no backend or paid API.
           </p>
 
           <div className="hero-tags">
-            <span>No server</span>
-            <span>Portuguese + English</span>
-            <span>Chunked long-form audio</span>
-            <span>WebGPU / WASM fallback</span>
+            <span>No backend</span>
+            <span>No paid API</span>
+            <span>{VOICE_OPTIONS.length} available voices</span>
+            <span>Single WAV download</span>
           </div>
         </div>
 
         <div className="hero-metrics">
           <article className="metric-card">
-            <span className="metric-label">Characters</span>
+            <span className="metric-label">Script length</span>
             <strong>{text.trim().length.toLocaleString()}</strong>
-            <small>Live textarea count</small>
+            <small>Characters in your current draft</small>
           </article>
           <article className="metric-card">
-            <span className="metric-label">Planned chunks</span>
+            <span className="metric-label">Render plan</span>
             <strong>{plannedChunks.length}</strong>
-            <small>Safe {320}-char packing</small>
+            <small>Automatic sentence and clause grouping</small>
           </article>
           <article className="metric-card">
-            <span className="metric-label">Estimated runtime</span>
+            <span className="metric-label">Estimated audio</span>
             <strong>{formatSeconds(estimatedDuration)}</strong>
             <small>Approximate speech length</small>
           </article>
@@ -395,7 +477,7 @@ function App() {
         <section className="panel composer-panel">
           <div className="panel-heading">
             <div>
-              <p className="section-kicker">Script lab</p>
+              <p className="section-kicker">Script</p>
               <h2>Paste a long script</h2>
             </div>
             <div className="sample-actions">
@@ -403,29 +485,31 @@ function App() {
                 type="button"
                 className="ghost-button"
                 onClick={() => {
-                  setText(SAMPLE_TEXT.pt)
-                  setVoiceId('pf_dora')
-                  appendLog('Loaded the Portuguese demo script.')
+                  setText(SAMPLE_TEXT.en)
+                  setVoiceId(DEFAULT_VOICE_ID)
+                  appendLog('Loaded the sample script.')
                 }}
               >
-                PT sample
+                Load sample
               </button>
               <button
                 type="button"
                 className="ghost-button"
                 onClick={() => {
-                  setText(SAMPLE_TEXT.en)
-                  setVoiceId('af_heart')
-                  appendLog('Loaded the English demo script.')
+                  setText('')
+                  appendLog('Cleared the current draft.')
                 }}
+                disabled={!text.length}
               >
-                EN sample
+                Clear script
               </button>
             </div>
           </div>
 
           <label className="textarea-shell">
-            <span className="textarea-meta">Long-form input · automatic chunk planning</span>
+            <span className="textarea-meta">
+              Long script input · autosaves in this browser
+            </span>
             <textarea
               value={text}
               onChange={(event) => setText(event.target.value)}
@@ -437,11 +521,11 @@ function App() {
           <div className="chunk-preview">
             <div className="panel-heading compact">
               <div>
-                <p className="section-kicker">Chunk planner</p>
-                <h2>How the text will be split</h2>
+                <p className="section-kicker">Render plan</p>
+                <h2>Preview the flow</h2>
               </div>
               <p className="subtle-copy">
-                Sentence-first, clause-aware, then word-safe fallback.
+                Automatic sentence and clause grouping for long scripts.
               </p>
             </div>
 
@@ -449,7 +533,7 @@ function App() {
               {plannedChunks.slice(0, 8).map((chunk, index) => (
                 <article key={`${index}-${chunk.slice(0, 16)}`} className="chunk-chip">
                   <div>
-                    <span>Chunk {index + 1}</span>
+                    <span>Part {index + 1}</span>
                     <strong>{chunk.length} chars</strong>
                   </div>
                   <p>{chunk}</p>
@@ -459,7 +543,7 @@ function App() {
 
             {plannedChunks.length > 8 ? (
               <p className="subtle-copy muted">
-                +{plannedChunks.length - 8} more chunks hidden from preview.
+                +{plannedChunks.length - 8} more parts hidden from preview.
               </p>
             ) : null}
           </div>
@@ -468,10 +552,12 @@ function App() {
         <section className="panel control-panel">
           <div className="panel-heading compact">
             <div>
-              <p className="section-kicker">Voice rig</p>
-              <h2>Render controls</h2>
+              <p className="section-kicker">Voice &amp; output</p>
+              <h2>Choose voice and generate</h2>
             </div>
-            <span className={`status-pill ${modelState}`}>{modelState}</span>
+            <span className={`status-pill ${modelState}`}>
+              {MODEL_STATE_LABELS[modelState]}
+            </span>
           </div>
 
           <div className="field-grid">
@@ -490,7 +576,7 @@ function App() {
             </label>
 
             <label className="field">
-              <span>Device</span>
+              <span>Performance mode</span>
               <select
                 value={devicePreference}
                 onChange={(event) =>
@@ -526,10 +612,12 @@ function App() {
             <p>{selectedVoice.description}</p>
             <ul>
               <li>Accent: {selectedVoice.accent}</li>
-              <li>Current engine: {engineLabel}</li>
-              <li>Model cache survives future runs in the same browser.</li>
+              <li>Current engine mode: {engineLabel}</li>
+              <li>Model cache stays available for future runs in this browser tab.</li>
             </ul>
           </article>
+
+          <p className="subtle-copy support-note">{VOICE_SUPPORT_NOTE}</p>
 
           <div className="action-row">
             <button
@@ -540,7 +628,7 @@ function App() {
               }}
               disabled={runState === 'generating'}
             >
-              {runState === 'generating' ? 'Rendering…' : 'Generate infinite audio'}
+              {runState === 'generating' ? 'Generating…' : 'Generate audio'}
             </button>
             <button
               type="button"
@@ -550,7 +638,7 @@ function App() {
               }}
               disabled={modelState === 'loading' || runState === 'generating'}
             >
-              Warm model
+              Load engine
             </button>
             <button
               type="button"
@@ -576,7 +664,7 @@ function App() {
           <article className="status-card">
             <div className="status-header">
               <div>
-                <p className="info-label">Model load</p>
+                <p className="info-label">Engine status</p>
                 <h3>{modelMessage}</h3>
               </div>
               <strong>{Math.round(modelProgress)}%</strong>
@@ -590,7 +678,7 @@ function App() {
           <article className="status-card">
             <div className="status-header">
               <div>
-                <p className="info-label">Generation run</p>
+                <p className="info-label">Audio render</p>
                 <h3>{runMessage}</h3>
               </div>
               <strong>{chunkProgress}%</strong>
@@ -599,17 +687,21 @@ function App() {
               <span style={{ width: `${chunkProgress}%` }} />
             </div>
             <p className="subtle-copy">
-              {completedChunks}/{plannedChunks.length || 0} chunks complete ·{' '}
+              {completedChunks}/{plannedChunks.length || 0} parts complete ·{' '}
               {formatSeconds(totalDurationSeconds)} rendered so far
             </p>
           </article>
 
           {downloadUrl ? (
             <article className="info-card playback-card">
-              <p className="info-label">Final stitched WAV</p>
-              <h3>Replay or download the merged output</h3>
+              <p className="info-label">Your WAV export</p>
+              <h3>Replay it or download the finished file</h3>
               <audio controls src={downloadUrl} className="audio-player" />
-              <a className="primary-button download-link" href={downloadUrl} download="kokoro-infinite.wav">
+              <a
+                className="primary-button download-link"
+                href={downloadUrl}
+                download="kokoro-infinite.wav"
+              >
                 Download WAV
               </a>
             </article>
@@ -631,10 +723,12 @@ function App() {
         <section className="panel queue-panel">
           <div className="panel-heading compact">
             <div>
-              <p className="section-kicker">Render queue</p>
-              <h2>Chunk-by-chunk status</h2>
+              <p className="section-kicker">Generation progress</p>
+              <h2>Track each rendered part</h2>
             </div>
-            <p className="subtle-copy">Each finished chunk is already streamed to the speakers.</p>
+            <p className="subtle-copy">
+              Finished parts start playing as soon as they are ready.
+            </p>
           </div>
 
           <div className="queue-list">
@@ -642,19 +736,24 @@ function App() {
               chunks.map((chunk) => (
                 <article key={chunk.index} className={`queue-item ${chunk.status}`}>
                   <div className="queue-meta">
-                    <span>Chunk {chunk.index + 1}</span>
+                    <span>Part {chunk.index + 1}</span>
                     <strong>{chunk.chars} chars</strong>
-                    <em>{chunk.durationSeconds ? formatSeconds(chunk.durationSeconds) : '—'}</em>
+                    <em>
+                      {chunk.durationSeconds ? formatSeconds(chunk.durationSeconds) : '—'}
+                    </em>
                   </div>
                   <p>{chunk.text}</p>
-                  <span className="queue-state">{chunk.status}</span>
+                  <span className="queue-state">
+                    {CHUNK_STATUS_LABELS[chunk.status]}
+                  </span>
+                  {chunk.error ? <p className="queue-error">{chunk.error}</p> : null}
                 </article>
               ))
             ) : (
               <article className="empty-state">
                 <p>
-                  Your queue will appear here after the text is chunked. Paste a script,
-                  choose a voice, and start rendering.
+                  Your generation queue appears here after you split the script.
+                  Paste text, choose a voice, and start rendering.
                 </p>
               </article>
             )}

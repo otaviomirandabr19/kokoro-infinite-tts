@@ -19,20 +19,6 @@ export const SAFE_CHUNK_SIZE = 320
 
 export const VOICE_OPTIONS = [
   {
-    id: 'pf_dora',
-    label: 'Dora',
-    language: 'Portuguese',
-    accent: 'Brazilian',
-    description: 'Warm Brazilian Portuguese with a steady storyteller tone.',
-  },
-  {
-    id: 'pm_alex',
-    label: 'Alex',
-    language: 'Portuguese',
-    accent: 'Brazilian',
-    description: 'Clear Brazilian Portuguese voice with a brighter read.',
-  },
-  {
     id: 'af_heart',
     label: 'Heart',
     language: 'English',
@@ -64,8 +50,12 @@ export const VOICE_OPTIONS = [
 
 export type VoiceId = (typeof VOICE_OPTIONS)[number]['id']
 
+export const DEFAULT_VOICE_ID: VoiceId = 'af_heart'
+
+export const VOICE_SUPPORT_NOTE =
+  'Current Kokoro browser bundles expose the English voices listed above.'
+
 export const SAMPLE_TEXT = {
-  pt: `No estúdio preto e verde-limão, cada frase vira uma faixa sonora contínua. A proposta aqui é simples: você cola um texto enorme, o navegador divide tudo em partes seguras para o Kokoro, gera cada trecho em sequência e emenda o resultado em um único fluxo. Sem backend, sem API paga, só o navegador trabalhando localmente com download progressivo e reprodução por partes.`,
   en: `Inside this black-and-lime voice lab, every paragraph becomes a continuous spoken ribbon. Drop a very long script, let the browser split it into Kokoro-safe segments, render each chunk one after another, and stitch the result into one uninterrupted export. No backend, no paid API, just a browser-first audio machine built for long-form narration.`,
 } as const
 
@@ -241,8 +231,9 @@ export function formatSeconds(seconds: number): string {
     return '0:00'
   }
 
-  const minutes = Math.floor(seconds / 60)
-  const remainder = Math.round(seconds % 60)
+  const totalSeconds = Math.max(0, Math.round(seconds))
+  const minutes = Math.floor(totalSeconds / 60)
+  const remainder = totalSeconds % 60
   return `${minutes}:${String(remainder).padStart(2, '0')}`
 }
 
