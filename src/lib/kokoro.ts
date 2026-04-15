@@ -17,6 +17,11 @@ export type LoadAttempt = {
 export const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX'
 export const SAFE_CHUNK_SIZE = 320
 
+const TERMINAL_SPEECH_PUNCTUATION = /[.!?…:;][)\]"'’”]*$/u
+const SENTENCE_STARTER = /^[\p{Lu}\p{N}"“'‘([]/u
+const CONTINUATION_STARTER = /^[\p{Ll}\p{M},;:)\]»”’—-]/u
+const LIST_ITEM_STARTER = /^(?:[-*•]\s+|\d+[.)]\s+)/u
+
 export const VOICE_OPTIONS = [
   {
     id: 'af_heart',
@@ -81,11 +86,63 @@ export function getLoadAttempts(preference: DevicePreference): LoadAttempt[] {
 }
 
 export function normalizeText(input: string): string {
-  return input
-    .replace(/\r\n/g, '\n')
-    .replace(/[\t ]+/g, ' ')
+  const normalized = input
+    .replace(/\r\n?/g, '\n')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  return normalized
+    .split(/\n{2,}/)
+    .map((paragraph) => restoreSpeechBreaksFromLines(paragraph))
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function restoreSpeechBreaksFromLines(paragraph: string): string {
+  const lines = paragraph
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (lines.length <= 1) {
+    return lines[0] ?? ''
+  }
+
+  return lines.reduce((combined, line, index) => {
+    if (index === 0) {
+      return line
+    }
+
+    const previousLine = lines[index - 1]
+    const separator = shouldInsertSpeechBreak(previousLine, line) ? '. ' : ' '
+    return `${combined}${separator}${line}`
+  }, '')
+}
+
+function shouldInsertSpeechBreak(previousLine: string, nextLine: string): boolean {
+  if (!previousLine || !nextLine) {
+    return false
+  }
+
+  if (TERMINAL_SPEECH_PUNCTUATION.test(previousLine)) {
+    return false
+  }
+
+  if (LIST_ITEM_STARTER.test(nextLine)) {
+    return true
+  }
+
+  if (CONTINUATION_STARTER.test(nextLine)) {
+    return false
+  }
+
+  return SENTENCE_STARTER.test(nextLine)
 }
 
 export function chunkTextForKokoro(input: string, maxChars = SAFE_CHUNK_SIZE): string[] {
